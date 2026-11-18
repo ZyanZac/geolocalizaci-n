@@ -27,6 +27,7 @@ class _MapaPageState extends State<MapaPage> {
   String _direccion = '';
   String? _error;
   bool _centrado = false;
+  final Geocoding _geocoding = Geocoding(locale: const Locale('es', 'MX'));
 
   double? get _metros {
     final p = _pos, d = _destino;
@@ -107,7 +108,7 @@ class _MapaPageState extends State<MapaPage> {
     });
     String texto;
     try {
-      final lugares = await placemarkFromCoordinates(punto.latitude, punto.longitude);
+      final lugares = await _geocoding.placemarkFromCoordinates(punto.latitude, punto.longitude);
       final m = lugares.isEmpty ? null : lugares.first;
       final partes = [m?.street, m?.subLocality].whereType<String>().where((s) => s.trim().isNotEmpty);
       texto = partes.isEmpty ? 'Dirección no disponible' : partes.join(', ');
