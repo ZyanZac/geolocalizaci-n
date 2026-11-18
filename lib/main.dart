@@ -1,121 +1,172 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
-void main() {
-  runApp(const MyApp());
+void main() => runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: MapaPage()));
+
+class UbicacionException implements Exception {
+  const UbicacionException(this.mensaje);
+  final String mensaje;
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  // This widget is the root of your application.
+class MapaPage extends StatefulWidget {
+  const MapaPage({super.key});
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+  State<MapaPage> createState() => _MapaPageState();
+}
+
+class _MapaPageState extends State<MapaPage> {
+  static const _utxj = LatLng(20.2756, -97.9611);
+  Set<Marker> _marcadores = {};
+  GoogleMapController? _ctrl;
+  StreamSubscription<Position>? _sub;
+  Position? _pos;
+  LatLng? _destino;
+  String _direccion = '';
+  String? _error;
+  bool _centrado = false;
+
+  double? get _metros {
+    final p = _pos, d = _destino;
+    if (p == null || d == null) return null;
+    return Geolocator.distanceBetween(p.latitude, p.longitude, d.latitude, d.longitude);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _iniciar();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _ctrl?.dispose();
+    super.dispose();
+  }
+
+  Future<Position> _obtenerUbicacion() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      throw const UbicacionException('Los servicios de ubicación están desactivados.');
+    }
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
+    if (perm == LocationPermission.denied) {
+      throw const UbicacionException('Permiso de ubicación denegado.');
+    }
+    if (perm == LocationPermission.deniedForever) {
+      throw const UbicacionException('Permiso denegado de forma permanente. Actívalo en Ajustes.');
+    }
+    return Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
     );
   }
-}
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+  Future<void> _iniciar() async {
+    await _sub?.cancel();
+    try {
+      final p = await _obtenerUbicacion();
+      if (!mounted) return;
+      setState(() {
+        _pos = p;
+        _error = null;
+      });
+      _centrar();
+      _sub = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10),
+      ).listen((n) {
+        if (mounted) setState(() => _pos = n);
+      }, onError: (_) {});
+    } on UbicacionException catch (e) {
+      if (mounted) setState(() => _error = e.mensaje);
+    } catch (_) {
+      if (mounted) setState(() => _error = 'No fue posible obtener la ubicación.');
+    }
+  }
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
+  void _centrar() {
+    final p = _pos, c = _ctrl;
+    if (p == null || c == null || _centrado) return;
+    _centrado = true;
+    c.animateCamera(CameraUpdate.newLatLngZoom(LatLng(p.latitude, p.longitude), 16));
+  }
 
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
+  Future<void> _onTap(LatLng punto) async {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _destino = punto;
+      _direccion = 'Consultando dirección…';
+      _marcadores = {
+        Marker(
+          markerId: const MarkerId('destino'),
+          position: punto,
+          infoWindow: const InfoWindow(title: 'Destino'),
+        ),
+      };
     });
+    String texto;
+    try {
+      final lugares = await placemarkFromCoordinates(punto.latitude, punto.longitude);
+      final m = lugares.isEmpty ? null : lugares.first;
+      final partes = [m?.street, m?.subLocality].whereType<String>().where((s) => s.trim().isNotEmpty);
+      texto = partes.isEmpty ? 'Dirección no disponible' : partes.join(', ');
+    } catch (_) {
+      texto = 'Dirección no disponible';
+    }
+    if (!mounted || _destino != punto) return;
+    setState(() => _direccion = texto);
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    final m = _metros;
+    final p = _pos;
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+      body: Stack(
+        children: [
+          GoogleMap(
+            initialCameraPosition: const CameraPosition(target: _utxj, zoom: 15.5),
+            myLocationEnabled: p != null,
+            myLocationButtonEnabled: true,
+            markers: _marcadores,
+            onMapCreated: (c) {
+              _ctrl = c;
+              _centrar();
+            },
+            onTap: _onTap,
+          ),
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 16,
+            child: SafeArea(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_error != null) ...[
+                        Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                        Wrap(children: [
+                          TextButton(onPressed: _iniciar, child: const Text('Reintentar')),
+                          TextButton(onPressed: Geolocator.openAppSettings, child: const Text('Abrir Ajustes')),
+                        ]),
+                      ],
+                      if (_error == null && p == null) const Text('Obteniendo ubicación…'),
+                      if (p != null) Text('Tu posición: ${p.latitude.toStringAsFixed(5)}, ${p.longitude.toStringAsFixed(5)}'),
+                      if (p != null && _destino == null) const Text('Toca el mapa para fijar un destino.'),
+                      if (m != null) Text('Distancia al destino: ${m.toStringAsFixed(0)} m'),
+                      if (_destino != null) Text('Dirección: $_direccion'),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+          ),
+        ],
       ),
     );
   }
